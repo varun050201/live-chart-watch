@@ -1,0 +1,99 @@
+//@version=6
+// Live Chart Watch [3-Class]
+// ---------------------------------------------------------------
+// A rules-based UP / DOWN / SIDEWAYS call for the next ~30 minutes,
+// shown in a small table at the top-right of the chart.
+// NO AI, NO external data: Pine cannot call a model or the web.
+// The call is computed only from the candles on this chart, with
+// transparent rules you can read and tune below.
+//
+// Designed for the 1-minute chart (works on any timeframe).
+//
+// How the call is made (all four inputs are direction-blind scores
+// that get combined into one signed signal):
+//   1. MOMENTUM  -- (close - close[10]) / ATR(14). How far price has
+//      moved in the last 10 bars, measured in units of a normal
+//      1-minute move. Clamped to +/-2 ATR so one wild bar cannot
+//      dominate.
+//   2. STRUCTURE -- (EMA 3 - EMA 6) / ATR(14). The short fast/slow
+//      EMA pair Varun already trades. Positive = short trend up.
+//      Clamped to +/-0.5 ATR.
+//   3. VWAP      -- (close - VWAP) / ATR(14). Where price sits vs the
+//      session VWAP. Above = buyers in control, below = sellers.
+//      Clamped to +/-1 ATR.
+//   4. VOLUME    -- volume / SMA(volume, 20). A volume boost: when the
+//      current bar trades >1.5x its 20-bar average volume, the
+//      signal is amplified by 10% (a move on real volume counts more).
+//
+//   signal = 0.50 * momentum + 0.25 * structure + 0.25 * vwap
+//   (then volume boost, capped at +/-1)
+//   score  = 50 + 50 * |signal|            -> 50..100
+//   call   = UP        if signal >=  0.35
+//            DOWN      if signal <= -0.35
+//            SIDEWAYS  otherwise
+//
+// Tune: change the weights, the 0.35 call threshold, or the clamp
+// limits below. The Python mirror in pine/rules_mirror.py must be
+// kept in sync with these exact numbers.
+// ---------------------------------------------------------------
+indicator("Live Chart Watch [3-Class]", shorttitle="LCW 3-Class",
+     overlay=true, max_labels_count=0)
+
+// ---------- inputs (tune these) ----------
+lookback   = input.int(10,  "Momentum lookback (bars)", minval=1)
+atrLen     = input.int(14,  "ATR length",               minval=1)
+volLen     = input.int(20,  "Volume average length",    minval=1)
+wMom       = input.float(0.50, "Weight: momentum", step=0.05, minval=0, maxval=1)
+wStruct    = input.float(0.25, "Weight: EMA structure", step=0.05, minval=0, maxval=1)
+wVwap      = input.float(0.25, "Weight: VWAP",         step=0.05, minval=0, maxval=1)
+threshold  = input.float(0.35, "Call threshold |signal|", step=0.05, minval=0.05, maxval=0.9)
+volBoostAt = input.float(1.5,  "Volume boost above (x avg)", step=0.1, minval=1.0)
+volBoostBy = input.float(1.10, "Volume boost factor",        step=0.05, minval=1.0, maxval=1.5)
+
+// ---------- components ----------
+atrVal  = ta.atr(atrLen)
+emaFast = ta.ema(close, 3)
+emaSlow = ta.ema(close, 6)
+vwapVal = ta.vwap(close)
+volAvg  = ta.sma(volume, volLen)
+
+// Guard: ATR or volume average can be na on the first bars.
+atrOk = not na(atrVal) and atrVal > 0
+volOk = not na(volAvg) and volAvg > 0
+
+// 1. Momentum in ATR units, clamped to [-2, 2], then scaled to [-1, 1]
+momRaw = atrOk ? (close - close[lookback]) / atrVal : 0.0
+mom    = math.max(-1.0, math.min(1.0, momRaw / 2.0))
+
+// 2. EMA structure in ATR units, clamped to [-0.5, 0.5], scaled to [-1, 1]
+strRaw = atrOk ? (emaFast - emaSlow) / atrVal : 0.0
+struct = math.max(-1.0, math.min(1.0, strRaw / 0.5))
+
+// 3. Price vs VWAP in ATR units, clamped to [-1, 1]
+vwapRaw = atrOk and not na(vwapVal) ? (close - vwapVal) / atrVal : 0.0
+vwapS   = math.max(-1.0, math.min(1.0, vwapRaw))
+
+// 4. Volume boost (only amplifies, never flips the direction)
+volRatio = volOk and not na(volume) ? volume / volAvg : 1.0
+boost    = volRatio >= volBoostAt ? volBoostBy : 1.0
+
+// ---------- combined signal, score, call ----------
+signalRaw = wMom * mom + wStruct * struct + wVwap * vwapS
+signal    = math.max(-1.0, math.min(1.0, signalRaw * boost))
+score     = math.round(50 + 50 * math.abs(signal))
+
+call      = signal >= threshold ? "UP" : signal <= -threshold ? "DOWN" : "SIDEWAYS"
+callColor = call == "UP" ? color.new(color.green, 0) :
+     call == "DOWN" ? color.new(color.red, 0) : color.new(color.gray, 0)
+
+// ---------- corner table (top-right, nothing else plotted) ----------
+var table t = table.new(position.top_right, 1, 3, border_width=1)
+
+if barstate.islast
+    table.cell(t, 0, 0, "LIVE CHART WATCH", text_color=color.white,
+         bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(t, 0, 1, call + "  " + str.tostring(score), text_color=color.white,
+         bgcolor=callColor, text_size=size.large)
+    table.cell(t, 0, 2, "next ~30 min  |  rules-based, not AI",
+         text_color=color.new(color.white, 20), bgcolor=color.new(color.black, 20),
+         text_size=size.small)

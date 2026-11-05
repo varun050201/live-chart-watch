@@ -60,11 +60,46 @@ cp .env.example .env   # put your key in .env (never commit it)
 
 `GET /api/health` reports which scoring mode is active.
 
+## TradingView indicator (no dashboard needed)
+
+If you don't want the separate app at all, use the rules-based version
+directly on the chart: `pine/live_chart_watch_indicator.pine` is a Pine
+Script v6 indicator, **"Live Chart Watch [3-Class]"**. It shows the same
+UP / DOWN / SIDEWAYS call + 0–100 score in a small table fixed at the
+top-right corner of the chart, coloured green/red/grey — nothing else is
+plotted, so it doesn't clutter your layout.
+
+How to add it in TradingView:
+
+1. Open your chart, then **Pine Editor** (bottom panel).
+2. Delete the template, paste the whole `.pine` file, click **Add to chart**.
+3. It works on any timeframe; 1-minute is what it was designed for.
+4. Tune it in the indicator's settings: momentum lookback, ATR length,
+   the three weights, and the call threshold (default 0.35).
+
+How it calls: ATR(14)-normalised 10-bar momentum (50%), EMA 3 vs EMA 6
+structure (25%), price vs session VWAP (25%), with a 10% boost when the
+current bar's volume is ≥1.5× its 20-bar average. Score = 50 + 50 ×
+|signal|. All rules are in comments inside the file.
+
+> **Honest limit:** this is rules-based, not the live AI model read. It
+> describes what the chart is doing *now*; it does not see anything the
+> candles don't already show. Backtested on real TSLA 1-minute bars
+> (2026-10-08 → 2026-11-05, 7,606 bars, `pine/rules_backtest.md`): the
+> calls hit the realised next-30-minute class **35.9%** of the time —
+> barely above a random 3-class guess (33.3%) and the majority-class
+> baseline (35.6%). UP fired 2,451 times (35.1% hit), DOWN 2,462 times
+> (37.4% hit), SIDEWAYS 2,693 times (35.2% hit). In plain words: the
+> rules label the current move, they do not predict the next one. The
+> Python mirror of the exact rules is `pine/rules_mirror.py` — rerun it
+> with `python3 pine/rules_mirror.py`.
+
 ## Project layout
 
 ```
 server.js           zero-framework Node server (static files + /api/score)
 public/index.html   the whole frontend: share picker, preview, side rail, tape
+pine/               TradingView indicator (Pine v6) + Python rules mirror + backtest
 test/score.test.js  smoke test for /api/score (fallback mode)
 ```
 
