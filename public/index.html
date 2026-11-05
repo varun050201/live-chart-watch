@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Chart Watch</title>
+<style>
+  :root { --bg:#0b0e14; --panel:#12161f; --line:#232a38; --text:#e6e9ef; --dim:#8b93a5;
+          --up:#22c55e; --down:#ef4444; --side:#f59e0b; --accent:#3b82f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0 8px 0 0; }
+  header label { font-size:13px; color:var(--dim); }
+  header input, header select { background:#0f1320; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:7px 9px; font-size:14px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  button.stop { background:#b91c1c; }
+  #status { font-size:13px; color:var(--dim); }
+  main { display:grid; grid-template-columns:1fr 320px; gap:0; min-height:calc(100vh - 57px); }
+  @media (max-width:800px){ main{ grid-template-columns:1fr; } }
+  .stage { padding:12px 16px; }
+  .stage video { width:100%; max-height:70vh; background:#000; border:1px solid var(--line); border-radius:8px; }
+  .stage .hint { color:var(--dim); font-size:13px; margin-top:8px; }
+  aside { border-left:1px solid var(--line); background:var(--panel); padding:16px; }
+  .big-call { font-size:44px; font-weight:800; letter-spacing:1px; margin:4px 0; }
+  .big-call.UP { color:var(--up); } .big-call.DOWN { color:var(--down); } .big-call.SIDEWAYS { color:var(--side); }
+  .scorebar { height:12px; background:#0f1320; border-radius:6px; overflow:hidden; margin:8px 0; }
+  .scorebar > div { height:100%; background:var(--accent); width:0%; transition:width .3s; }
+  .meta { font-size:13px; color:var(--dim); line-height:1.5; }
+  .evidence { font-size:14px; margin-top:10px; }
+  .tag { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--dim); margin-top:8px; }
+  .tape { list-style:none; margin:16px 0 0; padding:0; font-size:13px; max-height:45vh; overflow:auto; }
+  .tape li { display:flex; justify-content:space-between; gap:8px; padding:7px 4px; border-bottom:1px solid var(--line); }
+  .tape .UP { color:var(--up); font-weight:700; } .tape .DOWN { color:var(--down); font-weight:700; } .tape .SIDEWAYS { color:var(--side); font-weight:700; }
+  .err { color:#f87171; font-size:13px; margin-top:8px; }
+  footer { padding:10px 16px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Live Chart Watch</h1>
+  <label>Symbol <input id="symbol" value="TSLA" size="8" spellcheck="false"></label>
+  <label>Sample every
+    <select id="interval">
+      <option value="10">10s</option>
+      <option value="20" selected>20s</option>
+      <option value="30">30s</option>
+      <option value="60">60s</option>
+    </select>
+  </label>
+  <button id="startBtn">Start watch</button>
+  <button id="stopBtn" class="stop" disabled>Stop</button>
+  <span id="status">Idle. Share your TradingView tab to begin.</span>
+</header>
+
+<main>
+  <section class="stage">
+    <video id="preview" autoplay muted playsinline></video>
+    <p class="hint">Desktop Chrome/Edge only: the browser share picker lets you pick the
+    TradingView tab or window. The app samples one frame every interval and scores it
+    for the next 30 minutes. Only the reads (time, call, score) are kept — the video
+    itself is never stored or sent anywhere except the single frame being scored.</p>
+    <div id="err" class="err"></div>
+  </section>
+
+  <aside>
+    <div class="meta">Latest read — next 30 min</div>
+    <div id="call" class="big-call">—</div>
+    <div class="scorebar"><div id="scoreFill"></div></div>
+    <div class="meta">Score <b id="scoreNum">—</b> / 100 &nbsp;·&nbsp; <span id="readAt">—</span></div>
+    <div id="evidence" class="evidence">No reads yet.</div>
+    <div id="sourceTag" class="tag">scoring: checking…</div>
+    <h3 style="margin:20px 0 4px; font-size:14px;">Session tape</h3>
+    <ul id="tape"></ul>
+  </aside>
+</main>
+
+<footer>Experimental: a model read is a guess with a score attached, not a guarantee.
+Direction on short horizons is close to a coin flip — judge every call against what
+actually happened. Never trade on this alone.</footer>
+
+<canvas id="frameCanvas" style="display:none"></canvas>
+<script>
+const $ = id => document.getElementById(id);
+const video = $('preview'), canvas = $('frameCanvas');
+let stream = null, timer = null, reads = 0, scoringMode = 'checking…';
+
+async function refreshHealth() {
+  try {
+    const r = await fetch('/api/health');
+    const h = await r.json();
+    scoringMode = h.scoring === 'vision' ? `vision (${h.model})` : 'heuristic fallback (no vision key)';
+  } catch { scoringMode = 'unknown'; }
+  $('sourceTag').textContent = 'scoring: ' + scoringMode;
+}
+refreshHealth();
+
+function setStatus(t) { $('status').textContent = t; }
+function showErr(t) { $('err').textContent = t || ''; }
+
+// Reject frames that are (almost) blank before sending them anywhere.
+function frameIsReadable(ctx, w, h) {
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let sum = 0, sumSq = 0, n = 0;
+  for (let i = 0; i < d.length; i += 16) {
+    const v = (d[i] + d[i+1] + d[i+2]) / 3;
+    sum += v; sumSq += v * v; n++;
+  }
+  const mean = sum / n, variance = sumSq / n - mean * mean;
+  return variance > 50; // flat / black / single-colour frames fail
+}
+
+async function sampleOnce() {
+  if (!stream || video.readyState < 2) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+  const scale = Math.min(1, 960 / vw);
+  canvas.width = Math.round(vw * scale);
+  canvas.height = Math.round(vh * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  if (!frameIsReadable(ctx, canvas.width, canvas.height)) {
+    showErr("That frame didn't show a readable chart — skipped, not scored.");
+    return;
+  }
+  showErr('');
+  // PNG when the server is in heuristic mode (it decodes pixels); JPEG otherwise.
+  const isHeuristic = scoringMode.startsWith('heuristic');
+  const image = canvas.toDataURL(isHeuristic ? 'image/png' : 'image/jpeg', 0.75);
+  const symbol = $('symbol').value.trim().toUpperCase() || 'TSLA';
+  try {
+    const r = await fetch('/api/score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, symbol }),
+    });
+    const res = await r.json();
+    if (!r.ok) { showErr('Score failed: ' + (res.error || r.status)); return; }
+    if (res.call === 'UNREADABLE') {
+      showErr("That frame didn't show a readable chart — skipped, not scored.");
+      return;
+    }
+    renderRead(res);
+  } catch (e) {
+    showErr('Score failed: ' + e.message);
+  }
+}
+
+function renderRead(res) {
+  reads++;
+  $('call').textContent = res.call;
+  $('call').className = 'big-call ' + res.call;
+  $('scoreNum').textContent = res.score;
+  $('scoreFill').style.width = res.score + '%';
+  $('readAt').textContent = new Date(res.at).toLocaleTimeString();
+  $('evidence').textContent = res.evidence || '';
+  $('sourceTag').textContent = 'scoring: ' + res.source + (res.model ? ` (${res.model})` : '');
+  const li = document.createElement('li');
+  li.innerHTML = `<span>${new Date(res.at).toLocaleTimeString()}</span>` +
+    `<span class="${res.call}">${res.call}</span><span>${res.score}</span>`;
+  $('tape').prepend(li);
+  setStatus(`Watching ${$('symbol').value.trim().toUpperCase() || 'TSLA'} — ${reads} read${reads === 1 ? '' : 's'} this session.`);
+}
+
+$('startBtn').onclick = async () => {
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  } catch (e) {
+    showErr('Screen share was not started: ' + e.message);
+    return;
+  }
+  video.srcObject = stream;
+  $('startBtn').disabled = true;
+  $('stopBtn').disabled = false;
+  const secs = parseInt($('interval').value, 10) || 20;
+  setStatus(`Watching — sampling every ${secs}s. Keep the TradingView tab visible.`);
+  sampleOnce();
+  timer = setInterval(sampleOnce, secs * 1000);
+  stream.getVideoTracks()[0].addEventListener('ended', stopWatch);
+};
+
+function stopWatch() {
+  if (timer) clearInterval(timer);
+  timer = null;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  video.srcObject = null;
+  $('startBtn').disabled = false;
+  $('stopBtn').disabled = true;
+  setStatus('Stopped.');
+}
+$('stopBtn').onclick = stopWatch;
+</script>
+</body>
+</html>
