@@ -10,10 +10,10 @@ Rules (identical constants to the .pine file):
     vwap   = session (per-day) cumulative sum(close*volume)/sum(volume)
     volAvg = SMA(volume, 20)
     mom    = clip(((close - close[10]) / atr) / 2, -1, 1)
-    struct = clip(((ema3 - ema6) / atr) / 0.5, -1, 1)
+    structS = clip(((ema3 - ema6) / atr) / 0.5, -1, 1)
     vwapS  = clip((close - vwap) / atr, -1, 1)
     boost  = 1.10 if volume / volAvg >= 1.5 else 1.0
-    signal = clip((0.50*mom + 0.25*struct + 0.25*vwapS) * boost, -1, 1)
+    signal = clip((0.50*mom + 0.25*structS + 0.25*vwapS) * boost, -1, 1)
     score  = round(50 + 50*|signal|)
     call   = UP if signal >= 0.35, DOWN if signal <= -0.35, else SIDEWAYS
 
@@ -91,14 +91,14 @@ def compute_calls(df: pd.DataFrame) -> pd.DataFrame:
     mom_raw = (close - close.shift(LOOKBACK)) / atr
     mom = (mom_raw / 2.0).clip(-1, 1)
     struct_raw = (e3 - e6) / atr
-    struct = (struct_raw / 0.5).clip(-1, 1)
+    structS = (struct_raw / 0.5).clip(-1, 1)
     vwap_raw = (close - vwap) / atr
     vwap_s = vwap_raw.clip(-1, 1)
 
     vol_ratio = df["Volume"] / vol_avg
     boost = np.where(vol_ratio >= VOL_BOOST_AT, VOL_BOOST_BY, 1.0)
 
-    signal_raw = W_MOM * mom + W_STRUCT * struct + W_VWAP * vwap_s
+    signal_raw = W_MOM * mom + W_STRUCT * structS + W_VWAP * vwap_s
     signal = pd.Series(signal_raw.values * boost, index=df.index).clip(-1, 1)
     score = (50 + 50 * signal.abs()).round().astype("Int64")
     call = np.where(signal >= THRESHOLD, "UP",
@@ -106,7 +106,7 @@ def compute_calls(df: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame({
         "close": close, "atr": atr, "ema3": e3, "ema6": e6, "vwap": vwap,
-        "mom": mom, "struct": struct, "vwap_s": vwap_s,
+        "mom": mom, "structS": structS, "vwap_s": vwap_s,
         "vol_ratio": vol_ratio, "signal": signal, "score": score,
         "call": call,
     }, index=df.index)

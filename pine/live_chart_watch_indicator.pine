@@ -36,7 +36,7 @@
 // limits below. The Python mirror in pine/rules_mirror.py must be
 // kept in sync with these exact numbers.
 // ---------------------------------------------------------------
-indicator("Live Chart Watch [3-Class]", shorttitle="LCW 3-Class",
+indicator("Live Chart Watch [3-Class]", shorttitle="LCW-3Class",
      overlay=true, max_labels_count=0)
 
 // ---------- inputs (tune these) ----------
@@ -67,7 +67,7 @@ mom    = math.max(-1.0, math.min(1.0, momRaw / 2.0))
 
 // 2. EMA structure in ATR units, clamped to [-0.5, 0.5], scaled to [-1, 1]
 strRaw = atrOk ? (emaFast - emaSlow) / atrVal : 0.0
-struct = math.max(-1.0, math.min(1.0, strRaw / 0.5))
+structS = math.max(-1.0, math.min(1.0, strRaw / 0.5))
 
 // 3. Price vs VWAP in ATR units, clamped to [-1, 1]
 vwapRaw = atrOk and not na(vwapVal) ? (close - vwapVal) / atrVal : 0.0
@@ -78,7 +78,7 @@ volRatio = volOk and not na(volume) ? volume / volAvg : 1.0
 boost    = volRatio >= volBoostAt ? volBoostBy : 1.0
 
 // ---------- combined signal, score, call ----------
-signalRaw = wMom * mom + wStruct * struct + wVwap * vwapS
+signalRaw = wMom * mom + wStruct * structS + wVwap * vwapS
 signal    = math.max(-1.0, math.min(1.0, signalRaw * boost))
 score     = math.round(50 + 50 * math.abs(signal))
 
